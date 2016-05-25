@@ -41,6 +41,8 @@ class medoo
 
 	protected $debug_mode = false;
 
+	protected $distinct_mode = false;
+
 	public function __construct($options = null)
 	{
 		try {
@@ -155,6 +157,19 @@ class medoo
 	{
 		if ($this->debug_mode)
 		{
+			$this->debug_mode = false;
+			return false;
+		}
+
+		array_push($this->logs, $query);
+
+		return $this->pdo->query($query);
+	}
+
+	public function queryConCache($query)
+	{
+		if ($this->debug_mode)
+		{
 			echo $query;
 
 			$this->debug_mode = false;
@@ -164,7 +179,24 @@ class medoo
 
 		array_push($this->logs, $query);
 
-		return $this->pdo->query($query);
+		if (CACHE_ON){
+			$result = false;
+			if ($query){
+				$cache = Cache::getInstance();
+				$cachedResult = $cache->leer($query);
+				if ( $cachedResult != null){
+					$result = $cachedResult;
+				} else {
+					$result = $this->pdo->query($query)->fetchAll(PDO::FETCH_ASSOC);
+					if (!empty($result)){
+						$cache->cachear($query, $result);
+					}
+				}
+			}
+			return $result;
+		} else {
+			return $this->pdo->query($query)->fetchAll(PDO::FETCH_ASSOC);
+		}
 	}
 
 	public function exec($query)
@@ -502,6 +534,12 @@ class medoo
 					$where_clause .= ' ORDER BY "' . str_replace('.', '"."', $order_match[ 1 ]) . '"' . (isset($order_match[ 3 ]) ? ' ' . $order_match[ 3 ] : '');
 				}
 			}
+			if (isset($where[ '#ORDER' ]))
+			{
+				$ORDER = $where[ '#ORDER' ];
+
+				$where_clause .= ' ORDER BY ' . str_replace('.', '"."', $ORDER);
+			}
 
 			if (isset($where[ 'LIMIT' ]))
 			{
@@ -664,17 +702,54 @@ class medoo
 		{
 			$column = $this->column_push($columns);
 		}
+	    if($this->distinct_mode)
+	    {
+	        $distinct = 'DISTINCT ';
+	    } else {
+	        $distinct = '';
+	    }
 
-		return 'SELECT ' . $column . ' FROM ' . $table . $this->where_clause($where);
+		return 'SELECT '  . $distinct . $column . ' FROM ' . $table . $this->where_clause($where);
 	}
 
-	public function select($table, $join, $columns = null, $where = null)
+	public function distinct()
+	{
+	    $this->distinct_mode = true;
+
+	    return $this;
+	}
+
+	public function selectWithOutCache($table, $join, $columns = null, $where = null)
 	{
 		$query = $this->query($this->select_context($table, $join, $columns, $where));
-
 		return $query ? $query->fetchAll(
 			(is_string($columns) && $columns != '*') ? PDO::FETCH_COLUMN : PDO::FETCH_ASSOC
 		) : false;
+	}
+
+    public function select($table, $join, $columns = null, $where = null)
+	{
+			if (CACHE_ON){
+				$result = false;
+				$query = $this->query($this->select_context($table, $join, $columns, $where));
+				if ($query){
+					// Veo si tengo el resultado de la query en la cache.
+					$cache = Cache::getInstance();
+					$cachedResult = $cache->leer($query->queryString);
+					if ( $cachedResult != null){
+						$result = $cachedResult;
+					} else {
+						$result =  $query->fetchAll((is_string($columns) && $columns != '*') ? PDO::FETCH_COLUMN : PDO::FETCH_ASSOC);
+						// Guardo la consulta en la cache
+						if (!empty($result)){
+							$cache->cachear($query->queryString, $result);
+						}
+					}
+				}
+				return $result;
+			} else {
+				return $this->selectWithOutCache($table, $join, $columns, $where);
+			}
 	}
 
 	public function insert($table, $datas)
